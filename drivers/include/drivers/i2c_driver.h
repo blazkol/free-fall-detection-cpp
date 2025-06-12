@@ -8,21 +8,26 @@ extern "C" {
 #include <stdint.h>
 #include <stdbool.h>
 
-#define ICM_42670_P_ADDR    0x68    // Slave address of ICM-42670-P
+#define ICM_42670_P_ADDR  0x68  // Slave address of ICM-42670-P
 
-#define REG_ACCEL_DATA_X1   0x0B    // Upper byte of Accel X-axis data
-#define REG_ACCEL_DATA_X0   0x0C    // Lower byte of Accel X-axis data
-#define REG_ACCEL_DATA_Y1   0x0D    // Upper byte of Accel Y-axis data
-#define REG_ACCEL_DATA_Y0   0x0E    // Lower byte of Accel Y-axis data
-#define REG_ACCEL_DATA_Z1   0x0F    // Upper byte of Accel Z-axis data
-#define REG_ACCEL_DATA_Z0   0x10    // Lower byte of Accel Z-axis data
+typedef enum {
+    // Accelerometer
+    ACCEL_DATA_X1 = 0x0B,   // Upper byte of Accel X-axis data
+    ACCEL_DATA_X0 = 0x0C,   // Lower byte of Accel X-axis data
+    ACCEL_DATA_Y1 = 0x0D,   // Upper byte of Accel Y-axis data
+    ACCEL_DATA_Y0 = 0x0E,   // Lower byte of Accel Y-axis data
+    ACCEL_DATA_Z1 = 0x0F,   // Upper byte of Accel Z-axis data
+    ACCEL_DATA_Z0 = 0x10,   // Lower byte of Accel Z-axis data
 
-#define REG_GYRO_DATA_X1    0x11    // Upper byte of Gyro X-axis data
-#define REG_GYRO_DATA_X0    0x12    // Lower byte of Gyro X-axis data
-#define REG_GYRO_DATA_Y1    0x13    // Upper byte of Gyro Y-axis data
-#define REG_GYRO_DATA_Y0    0x14    // Lower byte of Gyro Y-axis data
-#define REG_GYRO_DATA_Z1    0x15    // Upper byte of Gyro Z-axis data
-#define REG_GYRO_DATA_Z0    0x16    // Lower byte of Gyro Z-axis data
+    // Gyroscope
+    GYRO_DATA_X1  = 0x11,   // Upper byte of Gyro X-axis data
+    GYRO_DATA_X0  = 0x12,   // Lower byte of Gyro X-axis data
+    GYRO_DATA_Y1  = 0x13,   // Upper byte of Gyro Y-axis data
+    GYRO_DATA_Y0  = 0x14,   // Lower byte of Gyro Y-axis data
+    GYRO_DATA_Z1  = 0x15,   // Upper byte of Gyro Z-axis data
+    GYRO_DATA_Z0  = 0x16    // Lower byte of Gyro Z-axis data
+
+} imu_register;
 
 typedef enum {
     FREE = 0x00,
@@ -31,11 +36,11 @@ typedef enum {
 
 typedef enum {
     WRITE = 0x00,
-    READ = 0x01
+    READ  = 0x01
 } rw_bit;
 
 typedef enum {
-    ACK = 0x00,
+    ACK  = 0x00,
     NACK = 0x01
 } ack_bit;
 
