@@ -11,9 +11,10 @@
 #include "drivers/i2c_driver.h"
 
 namespace bip = boost::interprocess;
+
 struct imu_sample {
-    float ax, ay, az;
-    float gx, gy, gz;
+    double ax, ay, az;
+    double gx, gy, gz;
 };
 
 class free_fall_detector {
@@ -52,7 +53,7 @@ public:
         int retry_count = 0;
         while (retry_count < max_retries) {
             // Send the START signal
-            std::cout << "Master (detector): Sending START signal." << std::endl;
+            // std::cout << "Master (detector): Sending START signal." << std::endl;
             start_cond->notify_one();
             
             // Send address of the slave device with READ
@@ -65,11 +66,11 @@ public:
             bool ack_received = ack_cond->timed_wait(lock, timeout);
 
             if (ack_received) {
-                std::cout << "Master (detector): ACK received after sending address with READ." << std::endl;
+                // std::cout << "Master (detector): ACK received after sending address with READ." << std::endl;
                 break;
             }
 
-            std::cerr << "Master (detector): Timeout waiting for ACK. Retrying..." << std::endl;
+            // std::cerr << "Master (detector): Timeout waiting for ACK. Retrying..." << std::endl;
             retry_count++;
         }
 
@@ -84,19 +85,19 @@ public:
         
         // Wait for the ACK signal
         ack_cond->wait(lock);
-        std::cout << "Master (detector): ACK received from slave device after sending register address." << std::endl;
+        // std::cout << "Master (detector): ACK received from slave device after sending register address." << std::endl;
 
         // Send the ACK signal
-        std::cout << "Master (detector): Sending ACK signal." << std::endl;
+        // std::cout << "Master (detector): Sending ACK signal." << std::endl;
         ack_cond->notify_one();
 
         // Wait for the data frame
         transmit_cond->wait(lock);
         data = i2c_receive_frame(i2c_mem.get());
-        std::cout << "Master (detector): Data received from slave device." << std::endl;
+        // std::cout << "Master (detector): Data received from slave device." << std::endl;
 
         // Send the STOP signal
-        std::cout << "Master (detector): Sending STOP signal." << std::endl;
+        // std::cout << "Master (detector): Sending STOP signal." << std::endl;
         stop_cond->notify_one();
 
         // Set the busy flag to free
@@ -105,8 +106,36 @@ public:
         return data;
     }
 
+    float get_gyro_scale_factor() {
+        std::uint8_t gyro_config0 = i2c_read_byte(ICM_42670_P_ADDR, GYRO_CONFIG0);
+        std::uint8_t gyro_fss = (gyro_config0 & 0x60) >> 5;
+        switch (gyro_fss) {
+            case 0x00: return 16.4f;   // ±2000 dps
+            case 0x01: return 32.8f;   // ±1000 dps
+            case 0x02: return 65.5f;   // ±500 dps
+            case 0x03: return 131.0f;  // ±250 dps
+        }
+    }
+
+    float get_accel_scale_factor() {
+        std::uint8_t accel_config0 = i2c_read_byte(ICM_42670_P_ADDR, ACCEL_CONFIG0);
+        std::uint8_t accel_fss = (accel_config0 & 0x60) >> 5;
+        switch (accel_fss) {
+            case 0x00: return 2048.0f;   // ±16g
+            case 0x01: return 4096.0f;   // ±8g
+            case 0x02: return 8192.0f;   // ±4g
+            case 0x03: return 16384.0f;  // ±2g
+        }
+    }
+
     imu_sample read_sample() {
         imu_sample sample = {};
+
+        float accel_scale = get_accel_scale_factor();
+        float gyro_scale = get_gyro_scale_factor();
+
+        std::cout << "Accel scale factor: " << accel_scale << std::endl;
+        std::cout << "Gyro scale factor: " << gyro_scale << std::endl;
 
         // Read accelerometer values
         std::uint8_t ax_high = i2c_read_byte(ICM_42670_P_ADDR, ACCEL_DATA_X1);
@@ -124,14 +153,25 @@ public:
         std::uint8_t gz_high = i2c_read_byte(ICM_42670_P_ADDR, GYRO_DATA_Z1);
         std::uint8_t gz_low  = i2c_read_byte(ICM_42670_P_ADDR, GYRO_DATA_Z0);
 
-        // Combine high and low bytes into 16-bit signed values
-        sample.ax = static_cast<int16_t>((ax_high << 8) | ax_low);
-        sample.ay = static_cast<int16_t>((ay_high << 8) | ay_low);
-        sample.az = static_cast<int16_t>((az_high << 8) | az_low);
+        // Combine high/low bytes
+        std::int16_t ax_raw = static_cast<std::int16_t>((ax_high << 8) | ax_low);
+        std::int16_t ay_raw = static_cast<std::int16_t>((ay_high << 8) | ay_low);
+        std::int16_t az_raw = static_cast<std::int16_t>((az_high << 8) | az_low);
+        std::int16_t gx_raw = static_cast<std::int16_t>((gx_high << 8) | gx_low);
+        std::int16_t gy_raw = static_cast<std::int16_t>((gy_high << 8) | gy_low);
+        std::int16_t gz_raw = static_cast<std::int16_t>((gz_high << 8) | gz_low);
 
-        sample.gx = static_cast<int16_t>((gx_high << 8) | gx_low);
-        sample.gy = static_cast<int16_t>((gy_high << 8) | gy_low);
-        sample.gz = static_cast<int16_t>((gz_high << 8) | gz_low);
+        // Convert raw values to physical units
+        sample.ax = static_cast<double>(ax_raw) / accel_scale; 
+        sample.ay = static_cast<double>(ay_raw) / accel_scale;
+        sample.az = static_cast<double>(az_raw) / accel_scale;
+        sample.gx = static_cast<double>(gx_raw) / gyro_scale;
+        sample.gy = static_cast<double>(gy_raw) / gyro_scale;
+        sample.gz = static_cast<double>(gz_raw) / gyro_scale;
+
+        std::cout << "IMU Sample:" << std::endl;
+        std::cout << "  Accel: ax=" << sample.ax << ", ay=" << sample.ay << ", az=" << sample.az << std::endl;
+        std::cout << "  Gyro : gx=" << sample.gx << ", gy=" << sample.gy << ", gz=" << sample.gz << std::endl;
 
         return sample;
     }

@@ -17,8 +17,8 @@
 namespace bip = boost::interprocess;
 
 struct imu_sample {
-    float ax, ay, az;
-    float gx, gy, gz;
+    double ax, ay, az;
+    double gx, gy, gz;
 };
 
 std::streampos parse_headers(std::ifstream &file, std::vector<std::string> &headers) {
@@ -38,9 +38,9 @@ std::streampos parse_headers(std::ifstream &file, std::vector<std::string> &head
 void load_next_sample(std::ifstream &file,
                       std::vector<std::string> &headers, 
                       std::streampos &data_start_pos, 
-                      std::uint8_t imu_registers[]) 
+                      imu_sample &sample) 
 {
-    std::vector<float> data_row;
+    std::vector<double> data_row;
     std::string line, cell;
 
     // Rewind to the beginning of the CSV file if its end has been reached
@@ -53,44 +53,56 @@ void load_next_sample(std::ifstream &file,
     std::stringstream ss(line);
     while (std::getline(ss, cell, ',')) {
         boost::algorithm::trim(cell);
-        data_row.push_back(std::stof(cell));
+        data_row.push_back(std::stod(cell));
     }
 
-    auto get_column = [&](const std::string &col_name) -> int16_t {
+    auto get_column = [&](const std::string &col_name) -> double {
         for (std::size_t i = 0; i < headers.size(); ++i) {
             if (headers[i] == col_name) {
-                return static_cast<int16_t>(data_row[i]);
+                return data_row[i];
             }
         }
-        return 0.0f;
+        return 0.0;
     };
 
-    int16_t ax = get_column("ax");
-    int16_t ay = get_column("ay");
-    int16_t az = get_column("az");
-    int16_t gx = get_column("gx");
-    int16_t gy = get_column("gy");
-    int16_t gz = get_column("gz");
+    sample.ax = get_column("ax");
+    sample.ay = get_column("ay");
+    sample.az = get_column("az");
+    sample.gx = get_column("gx");
+    sample.gy = get_column("gy");
+    sample.gz = get_column("gz");
+}
 
-    imu_registers[ACCEL_DATA_X1] = static_cast<uint8_t>((ax >> 8) & 0xFF);
-    imu_registers[ACCEL_DATA_X0] = static_cast<uint8_t>(ax & 0xFF);
-    imu_registers[ACCEL_DATA_Y1] = static_cast<uint8_t>((ay >> 8) & 0xFF);
-    imu_registers[ACCEL_DATA_Y0] = static_cast<uint8_t>(ay & 0xFF);
-    imu_registers[ACCEL_DATA_Z1] = static_cast<uint8_t>((az >> 8) & 0xFF);
-    imu_registers[ACCEL_DATA_Z0] = static_cast<uint8_t>(az & 0xFF);
+void update_imu_registers(imu_sample &sample, std::uint8_t imu_registers[]) {
+    constexpr double ACCEL_SCALE = 16384.0;
+    constexpr double GYRO_SCALE  = 131.0;
 
-    imu_registers[GYRO_DATA_X1] = static_cast<uint8_t>((gx >> 8) & 0xFF);
-    imu_registers[GYRO_DATA_X0] = static_cast<uint8_t>(gx & 0xFF);
-    imu_registers[GYRO_DATA_Y1] = static_cast<uint8_t>((gy >> 8) & 0xFF);
-    imu_registers[GYRO_DATA_Y0] = static_cast<uint8_t>(gy & 0xFF);
-    imu_registers[GYRO_DATA_Z1] = static_cast<uint8_t>((gz >> 8) & 0xFF);
-    imu_registers[GYRO_DATA_Z0] = static_cast<uint8_t>(gz & 0xFF);
+    std::int16_t ax_raw = static_cast<std::int16_t>(sample.ax * ACCEL_SCALE);
+    std::int16_t ay_raw = static_cast<std::int16_t>(sample.ay * ACCEL_SCALE);
+    std::int16_t az_raw = static_cast<std::int16_t>(sample.az * ACCEL_SCALE);
+    std::int16_t gx_raw = static_cast<std::int16_t>(sample.gx * GYRO_SCALE);
+    std::int16_t gy_raw = static_cast<std::int16_t>(sample.gy * GYRO_SCALE);
+    std::int16_t gz_raw = static_cast<std::int16_t>(sample.gz * GYRO_SCALE);
 
+    imu_registers[ACCEL_DATA_X1] = static_cast<std::uint8_t>((ax_raw >> 8) & 0xFF);
+    imu_registers[ACCEL_DATA_X0] = static_cast<std::uint8_t>(ax_raw & 0xFF);
+    imu_registers[ACCEL_DATA_Y1] = static_cast<std::uint8_t>((ay_raw >> 8) & 0xFF);
+    imu_registers[ACCEL_DATA_Y0] = static_cast<std::uint8_t>(ay_raw & 0xFF);
+    imu_registers[ACCEL_DATA_Z1] = static_cast<std::uint8_t>((az_raw >> 8) & 0xFF);
+    imu_registers[ACCEL_DATA_Z0] = static_cast<std::uint8_t>(az_raw & 0xFF);
+
+    imu_registers[GYRO_DATA_X1] = static_cast<std::uint8_t>((gx_raw >> 8) & 0xFF);
+    imu_registers[GYRO_DATA_X0] = static_cast<std::uint8_t>(gx_raw & 0xFF);
+    imu_registers[GYRO_DATA_Y1] = static_cast<std::uint8_t>((gy_raw >> 8) & 0xFF);
+    imu_registers[GYRO_DATA_Y0] = static_cast<std::uint8_t>(gy_raw & 0xFF);
+    imu_registers[GYRO_DATA_Z1] = static_cast<std::uint8_t>((gz_raw >> 8) & 0xFF);
+    imu_registers[GYRO_DATA_Z0] = static_cast<std::uint8_t>(gz_raw & 0xFF);
 }
    
 int main() {
     std::cout << "IMU simulator started." << std::endl;
 
+    imu_sample sample = {};
     std::uint8_t imu_registers[0x20] = {0};
 
     // Open the CSV file
@@ -127,9 +139,9 @@ int main() {
 
     while(true) {
         // Wait for the START signal
-        std::cout << "Slave (simulator): Waiting for START signal..." << std::endl;
+        // std::cout << "Slave (simulator): Waiting for START signal..." << std::endl;
         start_cond->wait(lock);
-        std::cout << "Slave (simulator): START signal received." << std::endl;
+        // std::cout << "Slave (simulator): START signal received." << std::endl;
 
         // Scan slave address
         if (i2c_scan_addr(i2c_mem.get(), device_addr)) {
@@ -153,7 +165,10 @@ int main() {
                     ack_cond->wait(lock);
 
                     // Load IMU sample from CSV
-                    load_next_sample(file, headers, data_start_pos, imu_registers);
+                    load_next_sample(file, headers, data_start_pos, sample);
+
+                    // Update IMU registers
+                    update_imu_registers(sample, imu_registers);
 
                     // Send data frame
                     data = imu_registers[reg_addr];
@@ -161,7 +176,7 @@ int main() {
                     transmit_cond->notify_one();
 
                     stop_cond->wait(lock);
-                    std::cout << "Slave (simulator): STOP signal received." << std::endl;
+                    // std::cout << "Slave (simulator): STOP signal received." << std::endl;
                     break;
             }
         }
