@@ -2,16 +2,26 @@
 #include <iostream>
 #include <memory>
 
-#include <boost/interprocess/shared_memory_object.hpp>
-#include <boost/interprocess/managed_shared_memory.hpp>
-#include <boost/interprocess/sync/interprocess_mutex.hpp>
-#include <boost/interprocess/sync/interprocess_condition.hpp>
 #include <boost/date_time/posix_time/posix_time.hpp>
+#include <boost/interprocess/managed_shared_memory.hpp>
+#include <boost/interprocess/shared_memory_object.hpp>
+#include <boost/interprocess/sync/interprocess_condition.hpp>
+#include <boost/interprocess/sync/interprocess_mutex.hpp>
+#include <boost/log/trivial.hpp>
+#include <boost/log/utility/setup/common_attributes.hpp>
+#include <boost/log/utility/setup/console.hpp>
+#include <boost/program_options.hpp>
 
 #include "drivers/i2c_driver.h"
 #include "drivers/imu_driver.h"
 
 namespace bip = boost::interprocess;
+namespace blog = boost::log;
+
+void init_logging() {
+    blog::add_console_log(std::clog, blog::keywords::format = "[%TimeStamp%] <%Severity%>: %Message%");
+    blog::add_common_attributes();
+}
 
 class free_fall_detector {
 public:
@@ -49,7 +59,6 @@ public:
         int retry_count = 0;
         while (retry_count < max_retries) {
             // Send the START signal
-            // std::cout << "Master (detector): Sending START signal." << std::endl;
             start_cond->notify_one();
             
             // Send address of the slave device with READ
@@ -62,16 +71,14 @@ public:
             bool ack_received = ack_cond->timed_wait(lock, timeout);
 
             if (ack_received) {
-                // std::cout << "Master (detector): ACK received after sending address with READ." << std::endl;
                 break;
             }
 
-            // std::cerr << "Master (detector): Timeout waiting for ACK. Retrying..." << std::endl;
             retry_count++;
         }
 
         if (retry_count == max_retries) {
-            std::cerr << "Master (detector): Failed to connect to device after " << max_retries << " attempts." << std::endl;
+            BOOST_LOG_TRIVIAL(error) << "Master (detector): Failed to connect to device after " << max_retries << " attempts.";
             return 1;
         }
 
@@ -81,19 +88,15 @@ public:
         
         // Wait for the ACK signal
         ack_cond->wait(lock);
-        // std::cout << "Master (detector): ACK received from slave device after sending register address." << std::endl;
 
         // Send the ACK signal
-        // std::cout << "Master (detector): Sending ACK signal." << std::endl;
         ack_cond->notify_one();
 
         // Wait for the data frame
         transmit_cond->wait(lock);
         data = i2c_receive_frame(i2c_mem.get());
-        // std::cout << "Master (detector): Data received from slave device." << std::endl;
 
         // Send the STOP signal
-        // std::cout << "Master (detector): Sending STOP signal." << std::endl;
         stop_cond->notify_one();
 
         // Set the busy flag to free
@@ -162,9 +165,9 @@ public:
         sample.gy = static_cast<double>(gy_raw) / gyro_scale;
         sample.gz = static_cast<double>(gz_raw) / gyro_scale;
 
-        std::cout << "IMU Sample:" << std::endl;
-        std::cout << "  Accel: ax=" << sample.ax << ", ay=" << sample.ay << ", az=" << sample.az << std::endl;
-        std::cout << "  Gyro : gx=" << sample.gx << ", gy=" << sample.gy << ", gz=" << sample.gz << std::endl;
+        BOOST_LOG_TRIVIAL(info) << "IMU Sample:";
+        BOOST_LOG_TRIVIAL(info) << "  Accel: ax=" << sample.ax << ", ay=" << sample.ay << ", az=" << sample.az;
+        BOOST_LOG_TRIVIAL(info) << "  Gyro : gx=" << sample.gx << ", gy=" << sample.gy << ", gz=" << sample.gz;
 
         return sample;
     }
@@ -185,7 +188,8 @@ private:
 };
 
 int main() {
-    std::cout << "Free fall detector started." << std::endl;
+    init_logging();
+    BOOST_LOG_TRIVIAL(info) << "Free fall detector started.";
 
     // Create the busy flag
     busy_flag bf = FREE;
@@ -196,7 +200,7 @@ int main() {
     // Read IMU sample
     detector.read_sample();
     
-    std::cout << "Free fall detector finished." << std::endl;
+    BOOST_LOG_TRIVIAL(info) << "Free fall detector finished.";
 
     return 0;
 }
