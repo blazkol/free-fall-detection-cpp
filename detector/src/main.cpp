@@ -1,4 +1,5 @@
 #include <cstdint>
+#include <fstream>
 #include <iostream>
 #include <memory>
 
@@ -17,6 +18,7 @@
 
 namespace bip = boost::interprocess;
 namespace blog = boost::log;
+namespace bpo = boost::program_options;
 
 void init_logging() {
     blog::add_console_log(std::clog, blog::keywords::format = "[%TimeStamp%] <%Severity%>: %Message%");
@@ -25,7 +27,9 @@ void init_logging() {
 
 class free_fall_detector {
 public:
-    free_fall_detector(const std::string& shm_name, busy_flag &flag) : shm_name(shm_name), bf(flag) {
+    free_fall_detector(const std::string& shm_name, busy_flag &flag, float threshold, int duration_ms)
+                      : shm_name(shm_name), bf(flag), ff_threshold(threshold), ff_duration_ms(duration_ms), free_fall(false), ff_counter(0) {
+
         // Clean up any previously existing shared memory
         bip::shared_memory_object::remove(shm_name.c_str());
 
@@ -113,6 +117,23 @@ public:
             case 0x01: return 32.8f;   // ±1000 dps
             case 0x02: return 65.5f;   // ±500 dps
             case 0x03: return 131.0f;  // ±250 dps
+            default:   return -1.0f;   // Invalid setting
+        }
+    }
+
+    float get_gyro_sampling_rate() {
+        std::uint8_t gyro_config0 = i2c_read_byte(ICM_42670_P_ADDR, GYRO_CONFIG0);
+        std::uint8_t gyro_odr = gyro_config0 & 0x0F;
+        switch (gyro_odr) {
+            case 0x05: return 1600.0f;     
+            case 0x06: return 800.0f;      
+            case 0x07: return 400.0f;      
+            case 0x08: return 200.0f;      
+            case 0x09: return 100.0f;      
+            case 0x0A: return 50.0f;       
+            case 0x0B: return 25.0f;       
+            case 0x0C: return 12.5f;         
+            default:   return -1.0f;     // Reserved / invalid setting
         }
     }
 
@@ -124,7 +145,34 @@ public:
             case 0x01: return 4096.0f;   // ±8g
             case 0x02: return 8192.0f;   // ±4g
             case 0x03: return 16384.0f;  // ±2g
+            default:   return -1.0f;     // Invalid setting
         }
+    }
+
+    float get_accel_sampling_rate() {
+        std::uint8_t accel_config0 = i2c_read_byte(ICM_42670_P_ADDR, GYRO_CONFIG0);
+        std::uint8_t accel_odr = accel_config0 & 0x0F;
+        switch (accel_odr) {
+            case 0x05: return 1600.0f;     
+            case 0x06: return 800.0f;      
+            case 0x07: return 400.0f;      
+            case 0x08: return 200.0f;      
+            case 0x09: return 100.0f;      
+            case 0x0A: return 50.0f;       
+            case 0x0B: return 25.0f;       
+            case 0x0C: return 12.5f;       
+            case 0x0D: return 6.25f;       
+            case 0x0E: return 3.125f;      
+            case 0x0F: return 1.5625f;     
+            default:   return -1.0f;    // Reserved / invalid setting
+        }
+    }
+
+    void read_imu_config() {
+        gyro_fss = get_gyro_scale_factor();
+        gyro_odr = get_gyro_sampling_rate();
+        accel_fss = get_accel_scale_factor();
+        accel_odr = get_accel_sampling_rate();
     }
 
     imu_sample read_sample() {
@@ -158,18 +206,64 @@ public:
         std::int16_t gz_raw = static_cast<std::int16_t>((gz_high << 8) | gz_low);
 
         // Convert raw values to physical units
-        sample.ax = static_cast<double>(ax_raw) / accel_scale; 
-        sample.ay = static_cast<double>(ay_raw) / accel_scale;
-        sample.az = static_cast<double>(az_raw) / accel_scale;
-        sample.gx = static_cast<double>(gx_raw) / gyro_scale;
-        sample.gy = static_cast<double>(gy_raw) / gyro_scale;
-        sample.gz = static_cast<double>(gz_raw) / gyro_scale;
+        sample.ax = static_cast<double>(ax_raw) / accel_fss; 
+        sample.ay = static_cast<double>(ay_raw) / accel_fss;
+        sample.az = static_cast<double>(az_raw) / accel_fss;
+        sample.gx = static_cast<double>(gx_raw) / gyro_fss;
+        sample.gy = static_cast<double>(gy_raw) / gyro_fss;
+        sample.gz = static_cast<double>(gz_raw) / gyro_fss;
 
-        BOOST_LOG_TRIVIAL(info) << "IMU Sample:";
-        BOOST_LOG_TRIVIAL(info) << "  Accel: ax=" << sample.ax << ", ay=" << sample.ay << ", az=" << sample.az;
-        BOOST_LOG_TRIVIAL(info) << "  Gyro : gx=" << sample.gx << ", gy=" << sample.gy << ", gz=" << sample.gz;
+        BOOST_LOG_TRIVIAL(info) << "Acceleration: ax=" << sample.ax << ", ay=" << sample.ay << ", az=" << sample.az;
 
         return sample;
+    }
+
+    bool check_free_fall_zone(const imu_sample &sample) {
+        return (std::abs(sample.ax) < ff_threshold &&
+                std::abs(sample.ay) < ff_threshold &&
+                std::abs(sample.az) < ff_threshold);
+    }
+
+    void free_fall_notify(const imu_sample &sample, const float &duration_ms) {
+        BOOST_LOG_TRIVIAL(warning) << "====== FREE FALL DETECTED! ======";
+    }
+
+    void detect_free_fall(const imu_sample &sample) {
+        if (check_free_fall_zone(sample)) {
+            BOOST_LOG_TRIVIAL(info) << "Free fall counter:" << ff_counter;
+            if (!free_fall) {
+                ff_counter = 1;
+                free_fall = true;
+            } else {
+                ++ff_counter;
+                float duration_ms = 1000.0f * (ff_counter / accel_odr);
+
+                if (duration_ms >= ff_duration_ms) {
+                    free_fall_notify(sample, duration_ms);
+                    // Reset state to avoid repeated notifications
+                    free_fall = false;
+                    ff_counter = 0;
+                }
+            }
+        } else if (free_fall) {
+            free_fall = false;
+            ff_counter = 0;
+        }     
+    }
+
+    void free_fall_detection_loop() {
+        // Read IMU configuration
+        read_imu_config();
+
+        while (true) {
+            try {
+                imu_sample sample = read_sample();
+                detect_free_fall(sample);
+            } catch (const std::exception& e) {
+                BOOST_LOG_TRIVIAL(error) << "Error in detection loop: " << e.what();
+                break;
+            }
+        }
     }
 
 private:
@@ -185,20 +279,53 @@ private:
     bip::interprocess_condition* stop_cond;
 
     busy_flag bf;
+
+    // IMU parameters
+    float gyro_fss, gyro_odr, accel_fss, accel_odr;
+
+    // Free fall detection parameters
+    float ff_threshold;
+    int ff_duration_ms;
+
+    // Free fall detection state variables
+    bool free_fall;
+    int ff_counter;
 };
 
 int main() {
     init_logging();
     BOOST_LOG_TRIVIAL(info) << "Free fall detector started.";
 
+    float ff_threshold;
+    int ff_duration_ms;
+
+    // Create the configuration
+    bpo::options_description config("configuration");
+    config.add_options()
+        ("free_fall_threshold", bpo::value<float>(&ff_threshold)->default_value(0.3f))
+        ("free_fall_duration", bpo::value<int>(&ff_duration_ms)->default_value(100))
+    ;
+
+    bpo::variables_map vm;
+    
+    // Open the config file
+    std::ifstream config_file("./resources/config.ini");
+    if (!config_file) {
+        BOOST_LOG_TRIVIAL(warning) << "Warning: config.ini not found, using defaults.";
+    } else {
+        bpo::store(bpo::parse_config_file(config_file, config, true), vm);
+        bpo::notify(vm);
+    }
+    config_file.close();
+
     // Create the busy flag
     busy_flag bf = FREE;
 
     // Create the detector
-    free_fall_detector detector("i2c_shm", bf);
+    free_fall_detector detector("i2c_shm", bf, ff_threshold, ff_duration_ms);
 
     // Read IMU sample
-    detector.read_sample();
+    detector.free_fall_detection_loop();
     
     BOOST_LOG_TRIVIAL(info) << "Free fall detector finished.";
 

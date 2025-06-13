@@ -1,0 +1,10 @@
+version: '3.8'
+
+services:
+  my_app:
+    build:
+      context: .
+    volumes:
+      - ./resources:/app/resources  # montowanie zasobów
+    working_dir: /app
+    entrypoint: ["/app/entrypoint.sh"]

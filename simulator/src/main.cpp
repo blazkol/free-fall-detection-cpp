@@ -28,10 +28,10 @@ void init_logging() {
     blog::add_common_attributes();
 }
 
-void parse_headers(std::ifstream &file, std::vector<std::string> &headers) {
+void parse_headers(std::ifstream &csv_file, std::vector<std::string> &headers) {
     std::string line, col;
 
-    std::getline(file, line);
+    std::getline(csv_file, line);
     std::stringstream ss(line);
 
     while (std::getline(ss, col, ',')) {
@@ -40,12 +40,27 @@ void parse_headers(std::ifstream &file, std::vector<std::string> &headers) {
     }
 }
 
-bool load_next_sample(std::ifstream &file, std::vector<std::string> &headers, imu_sample &sample) {
+bool skip_rows(std::ifstream &csv_file, int start_row = 0) {
+    std::string skip_line;
+
+    while (start_row-- > 0) {
+        if (!std::getline(csv_file, skip_line)) {
+            BOOST_LOG_TRIVIAL(error) << "CSV file does not contain enough rows to skip to start_row="
+                                     << (start_row + 1);
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool load_next_sample(std::ifstream &csv_file, std::vector<std::string> &headers, imu_sample &sample) {
     std::vector<double> data_row;
     std::string line, cell;
 
     // Return false if there are no more logs in the CSV file
-    if (!std::getline(file, line)) {
+    if (!std::getline(csv_file, line)) {
+        BOOST_LOG_TRIVIAL(warning) << "No subsequent IMU reading.";
         return false;
     }
 
@@ -74,15 +89,15 @@ bool load_next_sample(std::ifstream &file, std::vector<std::string> &headers, im
     return true;
 }
 
-void configure_imu(float &accel_range, float &gyro_range, std::uint8_t imu_registers[]) {
-    uint8_t accel_fss;
-    uint8_t gyro_fss;
+void configure_imu(float &accel_range, float &gyro_range, float &sampling_rate, std::uint8_t imu_bank_0[]) {
+    uint8_t accel_fss, accel_odr, gyro_fss, gyro_odr;
 
     switch (static_cast<int>(accel_range)) {
         case 16: accel_fss = 0x00; break;
         case 8:  accel_fss = 0x01; break;
         case 4:  accel_fss = 0x02; break;
         case 2:  accel_fss = 0x03; break;
+        default: accel_fss = 0x00; break;
     }
 
     switch (static_cast<int>(gyro_range)) {
@@ -90,13 +105,40 @@ void configure_imu(float &accel_range, float &gyro_range, std::uint8_t imu_regis
         case 1000: gyro_fss = 0x01; break;
         case 500:  gyro_fss = 0x02; break;
         case 250:  gyro_fss = 0x03; break;
+        default:   gyro_fss = 0x00; break;
     }
 
-    imu_registers[ACCEL_CONFIG0] = static_cast<std::uint8_t>(accel_fss << 5);
-    imu_registers[GYRO_CONFIG0]  = static_cast<std::uint8_t>(gyro_fss << 5);
+    if (sampling_rate >= 1600.0f) {
+        accel_odr = 0x05; gyro_odr = 0x05;
+    } else if (sampling_rate >= 800.0f) {
+        accel_odr = 0x06; gyro_odr = 0x06;
+    } else if (sampling_rate >= 400.0f) {
+        accel_odr = 0x07; gyro_odr = 0x07;
+    } else if (sampling_rate >= 200.0f) {
+        accel_odr = 0x08; gyro_odr = 0x08;
+    } else if (sampling_rate >= 100.0f) {
+        accel_odr = 0x09; gyro_odr = 0x09;
+    } else if (sampling_rate >= 50.0f) {
+        accel_odr = 0x0A; gyro_odr = 0x0A;
+    } else if (sampling_rate >= 25.0f) {
+        accel_odr = 0x0B; gyro_odr = 0x0B;
+    } else if (sampling_rate >= 12.5f) {
+        accel_odr = 0x0C; gyro_odr = 0x0C;
+    } else if (sampling_rate >= 6.25f) {
+        accel_odr = 0x0D;
+    } else if (sampling_rate >= 3.125f) {
+        accel_odr = 0x0E;
+    } else if (sampling_rate >= 1.5625f) {
+        accel_odr = 0x0F;
+    } else {
+        accel_odr = 0x0A; gyro_odr = 0x0A;  // 50 Hz
+    }
+
+    imu_bank_0[ACCEL_CONFIG0] = static_cast<std::uint8_t>((accel_fss << 5) | (accel_odr & 0x0F));
+    imu_bank_0[GYRO_CONFIG0]  = static_cast<std::uint8_t>((gyro_fss << 5)  | (gyro_odr & 0x0F));
 }
 
-void update_imu_registers(float &accel_range, float &gyro_range, imu_sample &sample, std::uint8_t imu_registers[]) {
+void update_imu_bank_0(float &accel_range, float &gyro_range, imu_sample &sample, std::uint8_t imu_bank_0[]) {
     double accel_scale;
     double gyro_scale;
 
@@ -121,34 +163,35 @@ void update_imu_registers(float &accel_range, float &gyro_range, imu_sample &sam
     std::int16_t gy_raw = static_cast<std::int16_t>(sample.gy * gyro_scale);
     std::int16_t gz_raw = static_cast<std::int16_t>(sample.gz * gyro_scale);
 
-    imu_registers[ACCEL_DATA_X1] = static_cast<std::uint8_t>((ax_raw >> 8) & 0xFF);
-    imu_registers[ACCEL_DATA_X0] = static_cast<std::uint8_t>(ax_raw & 0xFF);
-    imu_registers[ACCEL_DATA_Y1] = static_cast<std::uint8_t>((ay_raw >> 8) & 0xFF);
-    imu_registers[ACCEL_DATA_Y0] = static_cast<std::uint8_t>(ay_raw & 0xFF);
-    imu_registers[ACCEL_DATA_Z1] = static_cast<std::uint8_t>((az_raw >> 8) & 0xFF);
-    imu_registers[ACCEL_DATA_Z0] = static_cast<std::uint8_t>(az_raw & 0xFF);
+    imu_bank_0[ACCEL_DATA_X1] = static_cast<std::uint8_t>((ax_raw >> 8) & 0xFF);
+    imu_bank_0[ACCEL_DATA_X0] = static_cast<std::uint8_t>(ax_raw & 0xFF);
+    imu_bank_0[ACCEL_DATA_Y1] = static_cast<std::uint8_t>((ay_raw >> 8) & 0xFF);
+    imu_bank_0[ACCEL_DATA_Y0] = static_cast<std::uint8_t>(ay_raw & 0xFF);
+    imu_bank_0[ACCEL_DATA_Z1] = static_cast<std::uint8_t>((az_raw >> 8) & 0xFF);
+    imu_bank_0[ACCEL_DATA_Z0] = static_cast<std::uint8_t>(az_raw & 0xFF);
 
-    imu_registers[GYRO_DATA_X1] = static_cast<std::uint8_t>((gx_raw >> 8) & 0xFF);
-    imu_registers[GYRO_DATA_X0] = static_cast<std::uint8_t>(gx_raw & 0xFF);
-    imu_registers[GYRO_DATA_Y1] = static_cast<std::uint8_t>((gy_raw >> 8) & 0xFF);
-    imu_registers[GYRO_DATA_Y0] = static_cast<std::uint8_t>(gy_raw & 0xFF);
-    imu_registers[GYRO_DATA_Z1] = static_cast<std::uint8_t>((gz_raw >> 8) & 0xFF);
-    imu_registers[GYRO_DATA_Z0] = static_cast<std::uint8_t>(gz_raw & 0xFF);
+    imu_bank_0[GYRO_DATA_X1] = static_cast<std::uint8_t>((gx_raw >> 8) & 0xFF);
+    imu_bank_0[GYRO_DATA_X0] = static_cast<std::uint8_t>(gx_raw & 0xFF);
+    imu_bank_0[GYRO_DATA_Y1] = static_cast<std::uint8_t>((gy_raw >> 8) & 0xFF);
+    imu_bank_0[GYRO_DATA_Y0] = static_cast<std::uint8_t>(gy_raw & 0xFF);
+    imu_bank_0[GYRO_DATA_Z1] = static_cast<std::uint8_t>((gz_raw >> 8) & 0xFF);
+    imu_bank_0[GYRO_DATA_Z0] = static_cast<std::uint8_t>(gz_raw & 0xFF);
 }
    
 int main() {
     init_logging();
     BOOST_LOG_TRIVIAL(info) << "IMU simulator started.";
 
-    float accel_range, gyro_range;
-    int sample_rate;
+    float accel_range, gyro_range, sampling_rate;
+    int start_row;
 
     // Create the configuration
     bpo::options_description config("configuration");
     config.add_options()
-        ("sample_rate", bpo::value<int>(&sample_rate)->default_value(50))
+        ("sampling_rate", bpo::value<float>(&sampling_rate)->default_value(50))
         ("accel_range", bpo::value<float>(&accel_range)->default_value(2.0f))
         ("gyro_range", bpo::value<float>(&gyro_range)->default_value(250.0f))
+        ("start_row", bpo::value<int>(&start_row)->default_value(0))
     ;
 
     bpo::variables_map vm;
@@ -161,23 +204,29 @@ int main() {
         bpo::store(bpo::parse_config_file(config_file, config, true), vm);
         bpo::notify(vm);
     }
+    config_file.close(); 
 
-    std::uint8_t imu_registers[34] = {0};
+    std::uint8_t imu_bank_0[0x2f] = {0};
 
     // Set GYRO_CONFIG0 and ACCEL_CONFIG0 registers
-    configure_imu(accel_range, gyro_range, imu_registers);
+    configure_imu(accel_range, gyro_range, sampling_rate, imu_bank_0);
 
     // Open the CSV file
     std::string filename = "./resources/2023-01-16-15-33-09-imu.csv";
-    std::ifstream file(filename);
-    if (!file.is_open()) {
+    std::ifstream csv_file(filename);
+    if (!csv_file.is_open()) {
         BOOST_LOG_TRIVIAL(error) << "Failed to open CSV file: " << filename;
         return 1;
     }
 
-    // Parse headers and record the position
+    // Parse headers
     std::vector<std::string> headers;
-    parse_headers(file, headers);
+    parse_headers(csv_file, headers);
+
+    // Skip to start_row
+    if (!skip_rows(csv_file, start_row)) {
+        return 1;
+    }
 
     // Open shared memory
     bip::managed_shared_memory segment(bip::open_only, "i2c_shm");
@@ -226,16 +275,16 @@ int main() {
                     ack_cond->wait(lock);
 
                     // Load IMU sample from CSV
-                    if (!load_next_sample(file, headers, sample)) {
+                    if (!load_next_sample(csv_file, headers, sample)) {
                         BOOST_LOG_TRIVIAL(info) << "End of CSV file reached.";
                         break;
                     }
 
                     // Update IMU registers
-                    update_imu_registers(accel_range, gyro_range, sample, imu_registers);
+                    update_imu_bank_0(accel_range, gyro_range, sample, imu_bank_0);
 
                     // Send data frame
-                    data = imu_registers[reg_addr];
+                    data = imu_bank_0[reg_addr];
                     i2c_send_frame(i2c_mem.get(), data);
                     transmit_cond->notify_one();
 
@@ -245,7 +294,7 @@ int main() {
         }
     }
 
-    file.close();
+    csv_file.close();
 
     BOOST_LOG_TRIVIAL(info) << "IMU simulator finished.";
 
