@@ -9,13 +9,9 @@
 #include <boost/date_time/posix_time/posix_time.hpp>
 
 #include "drivers/i2c_driver.h"
+#include "drivers/imu_driver.h"
 
 namespace bip = boost::interprocess;
-
-struct imu_sample {
-    double ax, ay, az;
-    double gx, gy, gz;
-};
 
 class free_fall_detector {
 public:
@@ -133,9 +129,6 @@ public:
 
         float accel_scale = get_accel_scale_factor();
         float gyro_scale = get_gyro_scale_factor();
-
-        std::cout << "Accel scale factor: " << accel_scale << std::endl;
-        std::cout << "Gyro scale factor: " << gyro_scale << std::endl;
 
         // Read accelerometer values
         std::uint8_t ax_high = i2c_read_byte(ICM_42670_P_ADDR, ACCEL_DATA_X1);

@@ -31,10 +31,10 @@ FROM ubuntu:latest
 
 WORKDIR /app
 
-# Copy the compiled binaries, entrypoint script and data folder
+# Copy the compiled binaries, entrypoint script and resources
 COPY --from=builder /app/build ./build
 COPY --from=builder /app/entrypoint.sh .
-COPY ./data ./data
+COPY ./resources ./resources
 
 # Make the script executable 
 RUN chmod +x entrypoint.sh
